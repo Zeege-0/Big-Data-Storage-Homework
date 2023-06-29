@@ -11,8 +11,8 @@
 #include <regex>
 #include <string>
 #include <unordered_map>
-#include <vector>
 #include <unordered_set>
+#include <vector>
 
 #include <argparse/argparse.hpp>
 #include <indicators/indicators.hpp>
@@ -28,14 +28,7 @@
  * My Utilities
  */
 
-std::vector<std::string> split(const std::string &str) {
-  std::regex ws_re("\\s+"); // whitespace
-  return std::vector<std::string>(
-      std::sregex_token_iterator(str.begin(), str.end(), ws_re, -1),
-      std::sregex_token_iterator());
-}
-
-std::string joinpath(const std::string &a, const std::string &b) {
+std::string lzjJoinPath(const std::string &a, const std::string &b) {
   return a + "/" + b;
 }
 
@@ -66,9 +59,9 @@ struct FSSettings {
 
 FSSettings GlobalSettings;
 
-std::string getRealPath(const std::string &path, const FSSettings &settings) {
-  auto ssdpath = joinpath(settings.ssdMountPoint, path);
-  auto hddpath = joinpath(settings.hddMountPoint, path);
+std::string lzjRealPath(const std::string &path, const FSSettings &settings) {
+  auto ssdpath = lzjJoinPath(settings.ssdMountPoint, path);
+  auto hddpath = lzjJoinPath(settings.hddMountPoint, path);
   struct stat st;
   if (stat(ssdpath.c_str(), &st) == 0) {
     printf("ssd ;%s;\n", ssdpath.c_str());
@@ -82,46 +75,38 @@ std::string getRealPath(const std::string &path, const FSSettings &settings) {
   }
 }
 
-void lzjRead(const std::string &path, const FSSettings &settings, char *buffer, size_t size, size_t offset) {
-  auto realpath = getRealPath(path, settings);
-  lzjReadBin(realpath, buffer, size, offset);
+bool onSsd(const std::string &path, const FSSettings &settings) {
+  auto realpath = lzjRealPath(path, settings);
+  if (realpath.find(settings.ssdMountPoint) == 0) {
+    return true;
+  }
+  return false;
 }
 
-void lzjWrite(const std::string &path, const FSSettings &settings, char *buffer, size_t size, size_t offset) {
-  auto realpath = getRealPath(path, settings);
-  lzjWriteBin(realpath, buffer, size, offset);
-}
-
-void lzjRemove(const std::string &path, const FSSettings &settings) {
-  auto realpath = getRealPath(path, settings);
-  std::remove(realpath.c_str());
-  std::remove(joinpath(settings.ssdMountPoint, path).c_str());
-}
-
-static int do_getattr(const char *path, struct stat *st,
-                      struct fuse_file_info *fi) {
+static int myfuse_getattr(const char *path, struct stat *st,
+                          struct fuse_file_info *fi) {
   printf("--> GetAttr\n");
-  auto realpath = getRealPath(path, GlobalSettings);
-  if(realpath == "[]"){
+  auto realpath = lzjRealPath(path, GlobalSettings);
+  if (realpath == "[]") {
     return -ENOENT;
   }
   return stat(realpath.c_str(), st);
   return 0;
 }
 
-static int do_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
-                      off_t offset, struct fuse_file_info *fi,
-                      enum fuse_readdir_flags) {
+static int myfuse_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
+                          off_t offset, struct fuse_file_info *fi,
+                          enum fuse_readdir_flags) {
   DIR *dir;
   struct dirent *diread;
   std::unordered_set<std::string> filenames;
 
-  auto realpath = joinpath(GlobalSettings.ssdMountPoint, path);
+  auto realpath = lzjJoinPath(GlobalSettings.ssdMountPoint, path);
   printf("--> Getting SSD Files %s in %s\n", path, realpath.c_str());
   if ((dir = opendir(realpath.c_str())) != nullptr) {
     while ((diread = readdir(dir)) != nullptr) {
       struct stat *st = new struct stat();
-      auto joined = joinpath(path, diread->d_name);
+      auto joined = lzjJoinPath(path, diread->d_name);
       stat(joined.c_str(), st);
       printf("name: %s, %ld\n", diread->d_name, st->st_ctim.tv_sec);
       filenames.insert(diread->d_name);
@@ -132,7 +117,7 @@ static int do_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
     return -ENOENT;
   }
 
-  realpath = joinpath(GlobalSettings.hddMountPoint, path);
+  realpath = lzjJoinPath(GlobalSettings.hddMountPoint, path);
   printf("--> Getting HDD Files %s in %s\n", path, realpath.c_str());
   if ((dir = opendir(realpath.c_str())) != nullptr) {
     while ((diread = readdir(dir)) != nullptr) {
@@ -140,7 +125,7 @@ static int do_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
         continue;
       }
       struct stat *st = new struct stat();
-      auto joined = joinpath(path, diread->d_name);
+      auto joined = lzjJoinPath(path, diread->d_name);
       stat(joined.c_str(), st);
       printf("name: %s, %ld\n", diread->d_name, st->st_ctim.tv_sec);
       filler(buffer, diread->d_name, NULL, 0, fuse_fill_dir_flags(0));
@@ -153,32 +138,38 @@ static int do_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
   return 0;
 }
 
-static int do_read(const char *path, char *buffer, size_t size, off_t offset,
-                   struct fuse_file_info *fi) {
+static int myfuse_read(const char *path, char *buffer, size_t size, off_t offset,
+                       struct fuse_file_info *fi) {
   printf("-->  Read\n");
-  auto realpath = getRealPath(path, GlobalSettings);
+  auto realpath = lzjRealPath(path, GlobalSettings);
   lzjReadBin(realpath, buffer, size, offset);
   return size;
 }
 
-static int do_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *) {
+static int myfuse_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *) {
   printf("-->  Write\n");
-  auto realpath = getRealPath(path, GlobalSettings);
+  auto realpath = lzjRealPath(path, GlobalSettings);
+  // large file move to hdd
+  if (onSsd(path, GlobalSettings) and (size + offset > GlobalSettings.ssdMaxBytes)) {
+    auto hddpath = lzjJoinPath(GlobalSettings.hddMountPoint, path);
+    rename(realpath.c_str(), hddpath.c_str());
+    realpath = hddpath;
+  }
   lzjWriteBin(realpath, buffer, size, offset);
   return size;
 }
 
-static int do_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
+static int myfuse_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
   printf("-->  Create\n");
-  auto realpath = joinpath(GlobalSettings.ssdMountPoint, path);
+  auto realpath = lzjJoinPath(GlobalSettings.ssdMountPoint, path);
   std::ofstream fout(realpath);
   fout.close();
   return 0;
 }
 
-int do_utimens(const char *path, const struct timespec tv[2], struct fuse_file_info *fi) {
+int myfuse_utimens(const char *path, const struct timespec tv[2], struct fuse_file_info *fi) {
   printf("-->  Utimens\n");
-  auto realpath = getRealPath(path, GlobalSettings);
+  auto realpath = lzjRealPath(path, GlobalSettings);
   timeval t[2];
   t[0].tv_sec = tv[0].tv_sec;
   t[0].tv_usec = tv[0].tv_nsec;
@@ -188,55 +179,66 @@ int do_utimens(const char *path, const struct timespec tv[2], struct fuse_file_i
   return 0;
 }
 
-int do_mknod(const char* path, mode_t mode, dev_t dev) {
+int myfuse_mknod(const char *path, mode_t mode, dev_t dev) {
   printf("-->  Mknod %s\n", path);
   return 0;
 }
 
-int do_rename(const char* oldPath, const char* newPath, unsigned int flags){
+int myfuse_rename(const char *oldPath, const char *newPath, unsigned int flags) {
   printf("-->  Rename %s -> %s\n", oldPath, newPath);
-  auto oldrealpath = getRealPath(oldPath, GlobalSettings);
-  auto newRealPath = getRealPath(newPath, GlobalSettings);
+  auto oldrealpath = lzjRealPath(oldPath, GlobalSettings);
+  std::string newRealPath;
+  if (onSsd(oldPath, GlobalSettings)) {
+    newRealPath = lzjJoinPath(GlobalSettings.ssdMountPoint, newPath);
+  } else {
+    newRealPath = lzjJoinPath(GlobalSettings.hddMountPoint, newPath);
+  }
   return rename(oldrealpath.c_str(), newRealPath.c_str());
 }
 
-int do_mkdir(const char *path, mode_t mode){
+int myfuse_mkdir(const char *path, mode_t mode) {
   printf("-->  Mkdir %s\n", path);
-  auto ssd = joinpath(GlobalSettings.ssdMountPoint, path);
-  auto hdd = joinpath(GlobalSettings.hddMountPoint, path);
+  auto ssd = lzjJoinPath(GlobalSettings.ssdMountPoint, path);
+  auto hdd = lzjJoinPath(GlobalSettings.hddMountPoint, path);
   int ret = mkdir(ssd.c_str(), mode);
   ret = mkdir(hdd.c_str(), mode);
   return ret;
 }
 
-int do_rmdir(const char *path){
+int myfuse_rmdir(const char *path) {
   printf("-->  Rmdir %s\n", path);
-  auto ssd = joinpath(GlobalSettings.ssdMountPoint, path);
-  auto hdd = joinpath(GlobalSettings.hddMountPoint, path);
+  auto ssd = lzjJoinPath(GlobalSettings.ssdMountPoint, path);
+  auto hdd = lzjJoinPath(GlobalSettings.hddMountPoint, path);
   int ret = rmdir(ssd.c_str());
   ret = rmdir(hdd.c_str());
   return ret;
 }
 
-int do_unlink(const char* path){
+int myfuse_unlink(const char *path) {
   printf("-->  Unlink %s\n", path);
-  auto realpath = getRealPath(path, GlobalSettings);
+  auto realpath = lzjRealPath(path, GlobalSettings);
   remove(realpath.c_str());
   return 0;
 }
 
+int myfuse_setattr(const char *path, const char *, const char *, size_t, int) {
+  printf("-->  Setxattr %s\n", path);
+  int res = 0;
+  return res;
+}
 
 static struct fuse_operations operations = {
-    .getattr = do_getattr,
-    .mkdir = do_mkdir,
-    .unlink = do_unlink,
-    .rmdir = do_rmdir,
-    .rename = do_rename,
-    .read = do_read,
-    .write = do_write,
-    .readdir = do_readdir,
-    .create = do_create,
-    .utimens = do_utimens,
+    .getattr = myfuse_getattr,
+    .mkdir = myfuse_mkdir,
+    .unlink = myfuse_unlink,
+    .rmdir = myfuse_rmdir,
+    .rename = myfuse_rename,
+    .read = myfuse_read,
+    .write = myfuse_write,
+    .setxattr = myfuse_setattr,
+    .readdir = myfuse_readdir,
+    .create = myfuse_create,
+    .utimens = myfuse_utimens,
 };
 
 int main(int argc, char *argv[]) {
