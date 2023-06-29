@@ -2,6 +2,7 @@
 #define FUSE_USE_VERSION 30
 
 #include <dirent.h>
+#include <sys/time.h>
 
 #include <cstring>
 
@@ -46,8 +47,7 @@ void lzjReadBin(const std::string &filename, char *buffer, size_t size,
   fin.close();
 }
 
-void lzjWriteBin(const std::string &filename, char *buffer, size_t size,
-                 size_t offset = 0) {
+void lzjWriteBin(const std::string &filename, const char *buffer, size_t size, size_t offset = 0) {
   std::ofstream fout(filename, std::ios::binary);
   LZJ_CHECK_OPEN(fout, filename);
   fout.write(buffer + offset, size);
@@ -68,15 +68,16 @@ FSSettings GlobalSettings;
 std::string getRealPath(const std::string &path, const FSSettings &settings) {
   auto ssdpath = joinpath(settings.ssdMountPoint, path);
   auto hddpath = joinpath(settings.hddMountPoint, path);
-  if (0 == system(("test -e " + ssdpath).c_str())) {
+  struct stat st;
+  if (stat(ssdpath.c_str(), &st) == 0) {
     printf("ssd ;%s;\n", ssdpath.c_str());
     return ssdpath;
-  } else if (0 == system(("test -e " + hddpath).c_str())) {
+  } else if (stat(hddpath.c_str(), &st) == 0) {
     printf("hdd ;%s;\n", hddpath.c_str());
     return hddpath;
   } else {
     printf("getRealPath: no such file %s\n", path.c_str());
-    return "NoSuchPath!!!!!";
+    return "[]";
   }
 }
 
@@ -98,16 +99,15 @@ void lzjRemove(const std::string &path, const FSSettings &settings) {
 
 static int do_getattr(const char *path, struct stat *st,
                       struct fuse_file_info *fi) {
-  st->st_uid = getuid();
-  st->st_gid = getgid();
-  st->st_atime = time(nullptr);
-  st->st_mtime = time(nullptr);
-    auto realpath = getRealPath(path, GlobalSettings);
-    std::cout << realpath << "\n";
-    return stat(realpath.c_str(), st);
-    // st->st_mode = S_IFREG | 0644;
-    // st->st_nlink = 1;
-    // st->st_size = 1024;
+  printf("--> GetAttr\n");
+  auto realpath = getRealPath(path, GlobalSettings);
+  if(realpath == "[]"){
+    return -ENOENT;
+  }
+  return stat(realpath.c_str(), st);
+  // st->st_mode = S_IFREG | 0644;
+  // st->st_nlink = 1;
+  // st->st_size = 1024;
 
   return 0;
 }
@@ -137,7 +137,7 @@ static int do_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
   printf("--> Getting HDD Files %s in %s\n", path, realpath.c_str());
   if ((dir = opendir(realpath.c_str())) != nullptr) {
     while ((diread = readdir(dir)) != nullptr) {
-      if((diread->d_name == std::string(".")) or (diread->d_name == std::string(".."))){
+      if ((diread->d_name == std::string(".")) or (diread->d_name == std::string(".."))) {
         continue;
       }
       struct stat *st = new struct stat();
@@ -156,23 +156,58 @@ static int do_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
 
 static int do_read(const char *path, char *buffer, size_t size, off_t offset,
                    struct fuse_file_info *fi) {
+  printf("-->  Read\n");
   auto realpath = getRealPath(path, GlobalSettings);
   lzjReadBin(realpath, buffer, size, offset);
   return size;
 }
 
+static int do_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *) {
+  printf("-->  Write\n");
+  auto realpath = getRealPath(path, GlobalSettings);
+  lzjWriteBin(realpath, buffer, size, offset);
+  return size;
+}
+
+static int do_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
+  printf("-->  Create\n");
+  auto realpath = joinpath(GlobalSettings.ssdMountPoint, path);
+  std::ofstream fout(realpath);
+  fout.close();
+  return 0;
+}
+
+int do_utimens(const char *path, const struct timespec tv[2], struct fuse_file_info *fi) {
+  printf("-->  Utimens\n");
+  auto realpath = getRealPath(path, GlobalSettings);
+  timeval t[2];
+  t[0].tv_sec = tv[0].tv_sec;
+  t[0].tv_usec = tv[0].tv_nsec;
+  t[1].tv_sec = tv[1].tv_sec;
+  t[1].tv_usec = tv[1].tv_nsec;
+  utimes(realpath.c_str(), t);
+  return 0;
+}
+
+int do_mknod(const char* path, mode_t mode, dev_t dev) {
+  printf("--> Mknod %s\n", path);
+  return 0;
+}
+
+
 static struct fuse_operations operations = {
     .getattr = do_getattr,
     .read = do_read,
+    .write = do_write,
     .readdir = do_readdir,
+    .create = do_create,
+    .utimens = do_utimens,
 };
 
 int main(int argc, char *argv[]) {
-  int ret;
   GlobalSettings.hddMountPoint = "/home/ubuntu/work/dashuju/data/hdd";
   GlobalSettings.ssdMountPoint = "/home/ubuntu/work/dashuju/data/ssd";
   GlobalSettings.ssdMaxBytes = 4096;
   fuse_args args = FUSE_ARGS_INIT(argc, argv);
-  ret = fuse_main(argc, argv, &operations, NULL);
-  return ret;
+  return fuse_main(argc, argv, &operations, NULL);
 }
