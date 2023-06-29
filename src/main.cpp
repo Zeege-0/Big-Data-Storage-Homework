@@ -1,6 +1,8 @@
 
 #define FUSE_USE_VERSION 30
 
+#include <dirent.h>
+
 #include <cstring>
 
 #include <fstream>
@@ -15,9 +17,9 @@
 
 #include "fuse3/fuse.h"
 
-#define LZJ_CHECK_OPEN(f, filename)                                            \
-  if (!f) {                                                                    \
-    std::cerr << "Error open " << filename << "\n";                            \
+#define LZJ_CHECK_OPEN(f, filename)                 \
+  if (!f) {                                         \
+    std::cerr << "Error open " << filename << "\n"; \
   }
 
 /**
@@ -36,7 +38,7 @@ std::string joinpath(const std::string &a, const std::string &b) {
 }
 
 void lzjReadBin(const std::string &filename, char *buffer, size_t size,
-             size_t offset = 0) {
+                size_t offset = 0) {
   std::ifstream fin(filename, std::ios::binary);
   LZJ_CHECK_OPEN(fin, filename);
   fin.seekg(offset, std::ios::beg);
@@ -45,7 +47,7 @@ void lzjReadBin(const std::string &filename, char *buffer, size_t size,
 }
 
 void lzjWriteBin(const std::string &filename, char *buffer, size_t size,
-              size_t offset = 0) {
+                 size_t offset = 0) {
   std::ofstream fout(filename, std::ios::binary);
   LZJ_CHECK_OPEN(fout, filename);
   fout.write(buffer + offset, size);
@@ -61,36 +63,38 @@ struct FSSettings {
   std::string hddMountPoint;
 };
 
+FSSettings GlobalSettings;
 
-std::string getRealPath(const std::string &path, const FSSettings &settings){
+std::string getRealPath(const std::string &path, const FSSettings &settings) {
   auto ssdpath = joinpath(settings.ssdMountPoint, path);
-  std::string realpath;
-  if (0 == system(("test -e " + ssdpath + ".ssd").c_str())) {
-    return joinpath(settings.ssdMountPoint, path);
-  } else if (0 == system(("test -e " + ssdpath + ".hdd").c_str())) {
-    return joinpath(settings.hddMountPoint, path);
+  auto hddpath = joinpath(settings.hddMountPoint, path);
+  if (0 == system(("test -e " + ssdpath).c_str())) {
+    printf("ssd ;%s;\n", ssdpath.c_str());
+    return ssdpath;
+  } else if (0 == system(("test -e " + hddpath).c_str())) {
+    printf("hdd ;%s;\n", hddpath.c_str());
+    return hddpath;
   } else {
-    std::cerr << "No such file\n";
-    return "";
+    printf("getRealPath: no such file %s\n", path.c_str());
+    return "NoSuchPath!!!!!";
   }
 }
 
-int lzjRead(const std::string &path, const FSSettings &settings, char *buffer, size_t size, size_t offset) {
+void lzjRead(const std::string &path, const FSSettings &settings, char *buffer, size_t size, size_t offset) {
   auto realpath = getRealPath(path, settings);
   lzjReadBin(realpath, buffer, size, offset);
 }
 
-int lzjWrite(const std::string &path, const FSSettings &settings, char *buffer, size_t size, size_t offset) {
+void lzjWrite(const std::string &path, const FSSettings &settings, char *buffer, size_t size, size_t offset) {
   auto realpath = getRealPath(path, settings);
   lzjWriteBin(realpath, buffer, size, offset);
 }
 
-void lzjRemove(const std::string &path, const FSSettings &settings) { 
+void lzjRemove(const std::string &path, const FSSettings &settings) {
   auto realpath = getRealPath(path, settings);
   std::remove(realpath.c_str());
   std::remove(joinpath(settings.ssdMountPoint, path).c_str());
 }
-
 
 static int do_getattr(const char *path, struct stat *st,
                       struct fuse_file_info *fi) {
@@ -98,51 +102,63 @@ static int do_getattr(const char *path, struct stat *st,
   st->st_gid = getgid();
   st->st_atime = time(nullptr);
   st->st_mtime = time(nullptr);
-  if (strcmp(path, "/") == 0) {
-    st->st_mode = S_IFDIR | 0755;
-    st->st_nlink = 2;
-  } else {
-    st->st_mode = S_IFREG | 0644;
-    st->st_nlink = 1;
-    st->st_size = 1024;
-  }
+    auto realpath = getRealPath(path, GlobalSettings);
+    std::cout << realpath << "\n";
+    return stat(realpath.c_str(), st);
+    // st->st_mode = S_IFREG | 0644;
+    // st->st_nlink = 1;
+    // st->st_size = 1024;
+
   return 0;
 }
 
 static int do_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
                       off_t offset, struct fuse_file_info *fi,
                       enum fuse_readdir_flags) {
-  printf("--> Getting The List of Files of %s\n", path);
+  DIR *dir;
+  struct dirent *diread;
 
-  filler(buffer, ".", NULL, 0, fuse_fill_dir_flags());  // Current Directory
-  filler(buffer, "..", NULL, 0, fuse_fill_dir_flags()); // Parent Directory
-
-  if (strcmp(path, "/") ==
-      0) // If the user is trying to show the files/directories of the root
-         // directory show the following
-  {
-    filler(buffer, "file54", NULL, 0, fuse_fill_dir_flags());
-    filler(buffer, "file349", NULL, 0, fuse_fill_dir_flags());
+  auto realpath = joinpath(GlobalSettings.ssdMountPoint, path);
+  printf("--> Getting SSD Files %s in %s\n", path, realpath.c_str());
+  if ((dir = opendir(realpath.c_str())) != nullptr) {
+    while ((diread = readdir(dir)) != nullptr) {
+      struct stat *st = new struct stat();
+      auto joined = joinpath(path, diread->d_name);
+      stat(joined.c_str(), st);
+      printf("name: %s, %ld\n", diread->d_name, st->st_ctim.tv_sec);
+      filler(buffer, diread->d_name, NULL, 0, fuse_fill_dir_flags(0));
+    }
+    closedir(dir);
+  } else {
+    return -ENOENT;
   }
 
+  realpath = joinpath(GlobalSettings.hddMountPoint, path);
+  printf("--> Getting HDD Files %s in %s\n", path, realpath.c_str());
+  if ((dir = opendir(realpath.c_str())) != nullptr) {
+    while ((diread = readdir(dir)) != nullptr) {
+      if((diread->d_name == std::string(".")) or (diread->d_name == std::string(".."))){
+        continue;
+      }
+      struct stat *st = new struct stat();
+      auto joined = joinpath(path, diread->d_name);
+      stat(joined.c_str(), st);
+      printf("name: %s, %ld\n", diread->d_name, st->st_ctim.tv_sec);
+      filler(buffer, diread->d_name, NULL, 0, fuse_fill_dir_flags(0));
+    }
+    closedir(dir);
+  } else {
+    return -ENOENT;
+  }
+  printf("--> Finish Get File\n");
   return 0;
 }
 
 static int do_read(const char *path, char *buffer, size_t size, off_t offset,
                    struct fuse_file_info *fi) {
-  char file54Text[] = "Hello World From File54!";
-  char file349Text[] = "Hello World From File349!";
-  char *selectedText = NULL;
-  std::cout << "lllll: " << path << "\n";
-  if (strcmp(path, "/file54") == 0)
-    selectedText = file54Text;
-  else if (strcmp(path, "/file349") == 0)
-    selectedText = file349Text;
-  else
-    return -1;
-  memcpy(buffer, selectedText + offset, size);
-
-  return strlen(selectedText) - offset;
+  auto realpath = getRealPath(path, GlobalSettings);
+  lzjReadBin(realpath, buffer, size, offset);
+  return size;
 }
 
 static struct fuse_operations operations = {
@@ -153,6 +169,9 @@ static struct fuse_operations operations = {
 
 int main(int argc, char *argv[]) {
   int ret;
+  GlobalSettings.hddMountPoint = "/home/ubuntu/work/dashuju/data/hdd";
+  GlobalSettings.ssdMountPoint = "/home/ubuntu/work/dashuju/data/ssd";
+  GlobalSettings.ssdMaxBytes = 4096;
   fuse_args args = FUSE_ARGS_INIT(argc, argv);
   ret = fuse_main(argc, argv, &operations, NULL);
   return ret;
