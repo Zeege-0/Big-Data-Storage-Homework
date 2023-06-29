@@ -12,6 +12,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <unordered_set>
 
 #include <argparse/argparse.hpp>
 #include <indicators/indicators.hpp>
@@ -105,10 +106,6 @@ static int do_getattr(const char *path, struct stat *st,
     return -ENOENT;
   }
   return stat(realpath.c_str(), st);
-  // st->st_mode = S_IFREG | 0644;
-  // st->st_nlink = 1;
-  // st->st_size = 1024;
-
   return 0;
 }
 
@@ -117,6 +114,7 @@ static int do_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
                       enum fuse_readdir_flags) {
   DIR *dir;
   struct dirent *diread;
+  std::unordered_set<std::string> filenames;
 
   auto realpath = joinpath(GlobalSettings.ssdMountPoint, path);
   printf("--> Getting SSD Files %s in %s\n", path, realpath.c_str());
@@ -126,6 +124,7 @@ static int do_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
       auto joined = joinpath(path, diread->d_name);
       stat(joined.c_str(), st);
       printf("name: %s, %ld\n", diread->d_name, st->st_ctim.tv_sec);
+      filenames.insert(diread->d_name);
       filler(buffer, diread->d_name, NULL, 0, fuse_fill_dir_flags(0));
     }
     closedir(dir);
@@ -137,7 +136,7 @@ static int do_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
   printf("--> Getting HDD Files %s in %s\n", path, realpath.c_str());
   if ((dir = opendir(realpath.c_str())) != nullptr) {
     while ((diread = readdir(dir)) != nullptr) {
-      if ((diread->d_name == std::string(".")) or (diread->d_name == std::string(".."))) {
+      if (filenames.count(diread->d_name)) {
         continue;
       }
       struct stat *st = new struct stat();
@@ -190,13 +189,49 @@ int do_utimens(const char *path, const struct timespec tv[2], struct fuse_file_i
 }
 
 int do_mknod(const char* path, mode_t mode, dev_t dev) {
-  printf("--> Mknod %s\n", path);
+  printf("-->  Mknod %s\n", path);
+  return 0;
+}
+
+int do_rename(const char* oldPath, const char* newPath, unsigned int flags){
+  printf("-->  Rename %s -> %s\n", oldPath, newPath);
+  auto oldrealpath = getRealPath(oldPath, GlobalSettings);
+  auto newRealPath = getRealPath(newPath, GlobalSettings);
+  return rename(oldrealpath.c_str(), newRealPath.c_str());
+}
+
+int do_mkdir(const char *path, mode_t mode){
+  printf("-->  Mkdir %s\n", path);
+  auto ssd = joinpath(GlobalSettings.ssdMountPoint, path);
+  auto hdd = joinpath(GlobalSettings.hddMountPoint, path);
+  int ret = mkdir(ssd.c_str(), mode);
+  ret = mkdir(hdd.c_str(), mode);
+  return ret;
+}
+
+int do_rmdir(const char *path){
+  printf("-->  Rmdir %s\n", path);
+  auto ssd = joinpath(GlobalSettings.ssdMountPoint, path);
+  auto hdd = joinpath(GlobalSettings.hddMountPoint, path);
+  int ret = rmdir(ssd.c_str());
+  ret = rmdir(hdd.c_str());
+  return ret;
+}
+
+int do_unlink(const char* path){
+  printf("-->  Unlink %s\n", path);
+  auto realpath = getRealPath(path, GlobalSettings);
+  remove(realpath.c_str());
   return 0;
 }
 
 
 static struct fuse_operations operations = {
     .getattr = do_getattr,
+    .mkdir = do_mkdir,
+    .unlink = do_unlink,
+    .rmdir = do_rmdir,
+    .rename = do_rename,
     .read = do_read,
     .write = do_write,
     .readdir = do_readdir,
