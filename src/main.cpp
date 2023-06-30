@@ -154,6 +154,10 @@ static int myfuse_write(const char *path, const char *buffer, size_t size, off_t
     auto hddpath = lzjJoinPath(GlobalSettings.hddMountPoint, path);
     rename(realpath.c_str(), hddpath.c_str());
     realpath = hddpath;
+  } else if(!onSsd(path, GlobalSettings) and (size + offset < GlobalSettings.ssdMaxBytes)){
+    auto ssdpath = lzjJoinPath(GlobalSettings.ssdMountPoint, path);
+    rename(realpath.c_str(), ssdpath.c_str());
+    realpath = ssdpath;
   }
   lzjWriteBin(realpath, buffer, size, offset);
   return size;
@@ -243,7 +247,7 @@ static struct fuse_operations operations = {
 
 int main(int argc, char *argv[]) {
   GlobalSettings.hddMountPoint = "/home/ubuntu/work/dashuju/data/hdd";
-  GlobalSettings.ssdMountPoint = "/home/ubuntu/work/dashuju/data/ssd";
+  GlobalSettings.ssdMountPoint = "/mnt/sda";
   GlobalSettings.ssdMaxBytes = 4096;
   fuse_args args = FUSE_ARGS_INIT(argc, argv);
   return fuse_main(argc, argv, &operations, NULL);
